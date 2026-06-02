@@ -105,7 +105,7 @@ All endpoints are documented in [Swagger UI](http://localhost:8000/api/doc)!
 | POST | `/api/user/{samAccountName}/enable` | Enable a user |
 | POST | `/api/user/{samAccountName}/password` | Reset a user's password |
 | GET | `/api/group/list` | List all groups |
-| GET | `/api/group/{samAccountName}/members` | List members of a group |
+| GET | `/api/group/{groupName}/members` | List members of a group |
 | POST | `/api/user/{samAccountName}/add-to-group` | Add a user to a group |
 | POST | `/api/user/{samAccountName}/remove-from-group` | Remove a user from a group |
 
