@@ -129,8 +129,8 @@ class GroupController extends AbstractController
             throw new \InvalidArgumentException('Ungültiger JSON-Request-Body');
         }
 
-        $groupCn = isset($data['group']) && is_string($data['group']) ? trim($data['group']) : null;
-        if (!$groupCn) {
+        $groupCn = $data['group'] ?? null;
+        if (!is_string($groupCn) || trim($groupCn) === '') {
             throw new \InvalidArgumentException('Gruppenname fehlt');
         }
 

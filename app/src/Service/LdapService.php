@@ -276,7 +276,7 @@ class LdapService
 
     private function buildEqualityFilter(string $attribute, string $value): string
     {
-        return sprintf('(%s=%s)', $attribute, ldap_escape($value, '', LDAP_ESCAPE_FILTER));
+        return sprintf('(%s=%s)', $attribute, ldap_escape($value, flags: LDAP_ESCAPE_FILTER));
     }
 
     private function queryFirstEntry(string $dn, string $filter, array $options = []): ?Entry
@@ -303,7 +303,7 @@ class LdapService
 
     private function extractCommonName(string $dn): string
     {
-        if (preg_match('/CN=([^,]+)/i', $dn, $matches)) {
+        if (preg_match('/CN=([^,]+)/', $dn, $matches)) {
             return $matches[1];
         }
 

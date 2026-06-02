@@ -201,9 +201,9 @@ class UserController extends AbstractController
             ], Response::HTTP_BAD_REQUEST);
         }
 
-        $password = isset($data['password']) && is_string($data['password']) ? trim($data['password']) : null;
+        $password = isset($data['password']) && is_string($data['password']) ? $data['password'] : null;
 
-        if (!$password) {
+        if ($password === null || $password === '') {
             return $this->json([
                 'success' => false,
                 'error' => 'Passwort fehlt im Request-Body'
