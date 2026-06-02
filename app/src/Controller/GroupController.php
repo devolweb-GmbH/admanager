@@ -6,6 +6,7 @@ use App\Service\LdapService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
 use OpenApi\Annotations as OA;
 
@@ -65,11 +66,16 @@ class GroupController extends AbstractController
      */
     public function addToGroup(string $samAccountName, Request $request, LdapService $ldapService): JsonResponse
     {
-        $data = json_decode($request->getContent(), true);
-        $groupCn = $data['group'] ?? null;
+        try {
+            $data = $request->toArray();
+        } catch (\JsonException) {
+            return $this->json(['success' => false, 'error' => 'Ungültiger JSON-Request-Body'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $groupCn = isset($data['group']) && is_string($data['group']) ? trim($data['group']) : null;
 
         if (!$groupCn) {
-            return $this->json(['success' => false, 'error' => 'Gruppenname fehlt']);
+            return $this->json(['success' => false, 'error' => 'Gruppenname fehlt'], Response::HTTP_BAD_REQUEST);
         }
 
         try {
@@ -102,11 +108,16 @@ class GroupController extends AbstractController
      */
     public function removeFromGroup(string $samAccountName, Request $request, LdapService $ldapService): JsonResponse
     {
-        $data = json_decode($request->getContent(), true);
-        $groupCn = $data['group'] ?? null;
+        try {
+            $data = $request->toArray();
+        } catch (\JsonException) {
+            return $this->json(['success' => false, 'error' => 'Ungültiger JSON-Request-Body'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $groupCn = isset($data['group']) && is_string($data['group']) ? trim($data['group']) : null;
 
         if (!$groupCn) {
-            return $this->json(['success' => false, 'error' => 'Gruppenname fehlt']);
+            return $this->json(['success' => false, 'error' => 'Gruppenname fehlt'], Response::HTTP_BAD_REQUEST);
         }
 
         try {
