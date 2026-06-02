@@ -7,6 +7,8 @@ parameters:
     ldap.base_dn: '%env(LDAP_BASE_DN)%'
     ldap.user_dn: '%env(LDAP_USER_DN)%'
     ldap.password: '%env(LDAP_PASSWORD)%'
+    ldap.encryption: '%env(LDAP_ENCRYPTION)%'
+    ldap.ignore_cert: '%env(bool:LDAP_IGNORE_CERT)%'
 
 services:
     # Default configuration for services in *this* file
@@ -19,6 +21,8 @@ services:
             $baseDn: '%ldap.base_dn%'
             $userDn: '%ldap.user_dn%'
             $password: '%ldap.password%'
+            $encryption: '%ldap.encryption%'
+            $ignoreCert: '%ldap.ignore_cert%'
 
     # Makes classes in src/ available to be used as services
     # This creates a service per class whose id is the fully-qualified class name

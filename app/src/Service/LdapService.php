@@ -8,6 +8,8 @@ use Symfony\Component\Ldap\Adapter\ExtLdap\Connection as ExtLdapConnection;
 
 class LdapService
 {
+    private const ACCOUNT_DISABLED_FLAG = 0x2;
+
     private Ldap $ldap;
     private ExtLdapConnection $extConnection;
     private string $baseDn;
@@ -17,18 +19,19 @@ class LdapService
         int $port,
         string $baseDn,
         string $userDn,
-        string $password
+        string $password,
+        ?string $encryption = null,
+        bool $ignoreCert = false
     ) {
         $this->baseDn = $baseDn;
 
-        $encryption = $_ENV['LDAP_ENCRYPTION'] ?? (str_starts_with($host, 'ldaps://') ? 'ssl' : 'none');
+        $encryption ??= str_starts_with($host, 'ldaps://') ? 'ssl' : 'none';
         $host = preg_replace('#^ldaps?://#', '', $host);
 
-        if ($_ENV['LDAP_IGNORE_CERT'] == 1) {
+        if ($ignoreCert) {
             putenv('LDAPTLS_REQCERT=never');
         }
 
-        // Symfony-konforme Verbindung
         $this->ldap = Ldap::create('ext_ldap', [
             'host' => $host,
             'port' => $port,
@@ -37,7 +40,6 @@ class LdapService
 
         $this->ldap->bind($userDn, $password);
 
-        // Zugriff auf den nativen LDAP-Roh-Handle
         $this->extConnection = $this->getExtConnectionFromLdap($this->ldap);
     }
 
@@ -62,52 +64,39 @@ class LdapService
         }
 
         $filter = $samAccountName
-            ? "(sAMAccountName=$samAccountName)"
-            : "(mail=$email)";
+            ? $this->buildEqualityFilter('sAMAccountName', $samAccountName)
+            : $this->buildEqualityFilter('mail', (string) $email);
 
-        $query = $this->ldap->query($this->baseDn, $filter);
-        $results = $query->execute();
+        $entry = $this->queryFirstEntry($this->baseDn, $filter, ['scope' => 'sub']);
 
-        if (count($results) === 0) {
+        if (!$entry instanceof Entry) {
             return null;
         }
 
-        $entry = $results[0];
         $lockoutTime = $entry->getAttribute('lockoutTime')[0] ?? null;
         $uac = $entry->getAttribute('userAccountControl')[0] ?? null;
         $lastLogonRaw = $entry->getAttribute('lastLogonTimestamp')[0] ?? null;
 
-        // isLocked info
         $isLocked = isset($lockoutTime) && $lockoutTime !== '0';
 
-        // isDisabled info
         $isDisabled = false;
         if ($uac !== null) {
-            $isDisabled = ((int)$uac & 0x2) === 0x2;
+            $isDisabled = ((int) $uac & self::ACCOUNT_DISABLED_FLAG) === self::ACCOUNT_DISABLED_FLAG;
         }
 
-        // lastLogonTimestamp info
         $lastLogon = null;
         if ($lastLogonRaw && is_numeric($lastLogonRaw)) {
-            $windowsTimestamp = (int)$lastLogonRaw;
-            // AD-Zeit beginnt am 1.1.1601, Unix am 1.1.1970 → 11644473600 Sekunden Unterschied
-            $lastLogonUnix = (int)($windowsTimestamp / 10000000 - 11644473600);
+            $windowsTimestamp = (int) $lastLogonRaw;
+            $lastLogonUnix = (int) ($windowsTimestamp / 10000000 - 11644473600);
             $lastLogon = (new \DateTime())->setTimestamp($lastLogonUnix)->format('Y-m-d H:i:s');
         }
-
 
         return [
             'dn' => $entry->getDn(),
             'cn' => $entry->getAttribute('cn')[0] ?? null,
             'mail' => $entry->getAttribute('mail')[0] ?? null,
             'sAMAccountName' => $entry->getAttribute('sAMAccountName')[0] ?? null,
-            'memberOf' => array_map(function ($dn) {
-                // Extrahiere nur den CN-Teil
-                if (preg_match('/CN=([^,]+)/', $dn, $matches)) {
-                    return $matches[1];
-                }
-                return $dn; // fallback
-            }, $entry->getAttribute('memberOf') ?? []),
+            'memberOf' => array_map($this->extractCommonName(...), $entry->getAttribute('memberOf') ?? []),
             'isLocked' => $isLocked,
             'isDisabled' => $isDisabled,
             'lastLogon' => $lastLogon,
@@ -119,42 +108,32 @@ class LdapService
 
     public function getDnBySamAccountName(string $samAccountName): ?string
     {
-        $filter = "(sAMAccountName=$samAccountName)";
-        $query = $this->ldap->query($this->baseDn, $filter);
-        $results = $query->execute();
+        $entry = $this->queryFirstEntry(
+            $this->baseDn,
+            $this->buildEqualityFilter('sAMAccountName', $samAccountName),
+            ['scope' => 'sub']
+        );
 
-        return count($results) ? $results[0]->getDn() : null;
+        return $entry?->getDn();
     }
 
     public function unlockUserByDn(string $dn): void
     {
-        $ldapResource = $this->extConnection->getResource();
-
-        $modifications = [
+        $this->modifyBatch($dn, [
             [
                 'attrib' => 'lockoutTime',
                 'modtype' => LDAP_MODIFY_BATCH_REPLACE,
                 'values' => ['0'],
             ],
-        ];
-
-        if (!@ldap_modify_batch($ldapResource, $dn, $modifications)) {
-            $error = ldap_error($ldapResource);
-            throw new \RuntimeException("Unlock fehlgeschlagen: $error");
-        }
+        ], 'Unlock fehlgeschlagen');
     }
 
     public function disableUserByDn(string $dn): void
     {
-        $query = $this->ldap->query($dn, '(objectClass=*)');
-        $results = $query->execute();
-
-        if (count($results) === 0) {
+        $entry = $this->getEntryByDn($dn);
+        if (!$entry instanceof Entry) {
             throw new \RuntimeException("Benutzer nicht gefunden: $dn");
         }
-
-        /** @var Entry $entry */
-        $entry = $results[0];
 
         $currentValue = $entry->getAttribute('userAccountControl')[0] ?? null;
 
@@ -162,36 +141,23 @@ class LdapService
             throw new \RuntimeException("userAccountControl nicht vorhanden.");
         }
 
-        $disabledFlag = 0x2;
-        $newValue = (int)$currentValue | $disabledFlag;
+        $newValue = (int) $currentValue | self::ACCOUNT_DISABLED_FLAG;
 
-        $modifications = [
+        $this->modifyBatch($dn, [
             [
                 'attrib' => 'userAccountControl',
                 'modtype' => LDAP_MODIFY_BATCH_REPLACE,
                 'values' => [$newValue],
             ],
-        ];
-
-        $ldapResource = $this->extConnection->getResource();
-
-        if (!@ldap_modify_batch($ldapResource, $dn, $modifications)) {
-            $error = ldap_error($ldapResource);
-            throw new \RuntimeException("Deaktivierung fehlgeschlagen: $error");
-        }
+        ], 'Deaktivierung fehlgeschlagen');
     }
 
     public function enableUserByDn(string $dn): void
     {
-        $query = $this->ldap->query($dn, '(objectClass=*)');
-        $results = $query->execute();
-
-        if (count($results) === 0) {
+        $entry = $this->getEntryByDn($dn);
+        if (!$entry instanceof Entry) {
             throw new \RuntimeException("Benutzer nicht gefunden: $dn");
         }
-
-        /** @var Entry $entry */
-        $entry = $results[0];
 
         $currentValue = $entry->getAttribute('userAccountControl')[0] ?? null;
 
@@ -199,50 +165,34 @@ class LdapService
             throw new \RuntimeException("userAccountControl nicht vorhanden.");
         }
 
-        $disabledFlag = 0x2;
-        $newValue = (int)$currentValue & ~$disabledFlag;
+        $newValue = (int) $currentValue & ~self::ACCOUNT_DISABLED_FLAG;
 
-        $modifications = [
+        $this->modifyBatch($dn, [
             [
                 'attrib' => 'userAccountControl',
                 'modtype' => LDAP_MODIFY_BATCH_REPLACE,
                 'values' => [$newValue],
             ],
-        ];
-
-        $ldapResource = $this->extConnection->getResource();
-
-        if (!@ldap_modify_batch($ldapResource, $dn, $modifications)) {
-            $error = ldap_error($ldapResource);
-            throw new \RuntimeException("Aktivierung fehlgeschlagen: $error");
-        }
+        ], 'Aktivierung fehlgeschlagen');
     }
 
     public function resetPasswordByDn(string $dn, string $newPassword): void
     {
-        $ldapResource = $this->extConnection->getResource();
-
-        // Passwort im AD-Format codieren
         $encoded = mb_convert_encoding('"' . $newPassword . '"', 'UTF-16LE');
 
-        $modifications = [
+        $this->modifyBatch($dn, [
             [
                 'attrib' => 'unicodePwd',
                 'modtype' => LDAP_MODIFY_BATCH_REPLACE,
                 'values' => [$encoded],
             ],
-        ];
-
-        if (!@ldap_modify_batch($ldapResource, $dn, $modifications)) {
-            $error = ldap_error($ldapResource);
-            throw new \RuntimeException("Passwortänderung fehlgeschlagen: $error");
-        }
+        ], 'Passwortänderung fehlgeschlagen');
     }
 
     public function getAllGroups(): array
     {
         $query = $this->ldap->query($this->baseDn, '(&(objectCategory=group))', [
-            'scope' => 'sub' // Sehr wichtig für verschachtelte OUs
+            'scope' => 'sub'
         ]);
 
         $results = $query->execute();
@@ -270,23 +220,15 @@ class LdapService
         $entry = $results[0];
         $members = $entry->getAttribute('member') ?? [];
 
-        // Jetzt: Hole zu jedem member-DN die cn, mail etc.
         $userInfos = [];
         foreach ($members as $memberDn) {
             try {
-                $userQuery = $this->ldap->query($memberDn, '(objectClass=*)');
-                $userResults = $userQuery->execute();
-                if (count($userResults) > 0) {
-                    $userEntry = $userResults[0];
-                    $userInfos[] = [
-                        'dn' => $memberDn,
-                        'cn' => $userEntry->getAttribute('cn')[0] ?? null,
-                        'mail' => $userEntry->getAttribute('mail')[0] ?? null,
-                        'sAMAccountName' => $userEntry->getAttribute('sAMAccountName')[0] ?? null,
-                    ];
+                $userEntry = $this->getEntryByDn($memberDn);
+                if ($userEntry instanceof Entry) {
+                    $userInfos[] = $this->mapUserSummary($memberDn, $userEntry);
                 }
             } catch (\Throwable $t) {
-                // ignore broken entries
+                continue;
             }
         }
 
@@ -300,16 +242,11 @@ class LdapService
             throw new \RuntimeException("Benutzer nicht gefunden");
         }
 
-        $mod = [[
+        $this->modifyBatch($groupDn, [[
             'attrib' => 'member',
             'modtype' => LDAP_MODIFY_BATCH_ADD,
             'values' => [$userDn],
-        ]];
-
-        if (!@ldap_modify_batch($this->extConnection->getResource(), $groupDn, $mod)) {
-            $error = ldap_error($this->extConnection->getResource());
-            throw new \RuntimeException("Fehler beim Hinzufügen: $error");
-        }
+        ]], 'Fehler beim Hinzufügen');
     }
 
     public function removeUserFromGroup(string $samAccountName, string $groupDn): void
@@ -319,24 +256,68 @@ class LdapService
             throw new \RuntimeException("Benutzer nicht gefunden");
         }
 
-        $mod = [[
+        $this->modifyBatch($groupDn, [[
             'attrib' => 'member',
             'modtype' => LDAP_MODIFY_BATCH_REMOVE,
             'values' => [$userDn],
-        ]];
-
-        if (!@ldap_modify_batch($this->extConnection->getResource(), $groupDn, $mod)) {
-            $error = ldap_error($this->extConnection->getResource());
-            throw new \RuntimeException("Fehler beim Entfernen: $error");
-        }
+        ]], 'Fehler beim Entfernen');
     }
 
     public function resolveGroupDnByCn(string $cn): ?string
     {
-        $query = $this->ldap->query($this->baseDn, "(cn=$cn)", ['scope' => 'sub']);
-        $results = $query->execute();
+        $entry = $this->queryFirstEntry(
+            $this->baseDn,
+            '(&(objectCategory=group)' . $this->buildEqualityFilter('cn', $cn) . ')',
+            ['scope' => 'sub']
+        );
 
-        return count($results) ? $results[0]->getDn() : null;
+        return $entry?->getDn();
+    }
+
+    private function buildEqualityFilter(string $attribute, string $value): string
+    {
+        return sprintf('(%s=%s)', $attribute, ldap_escape($value, flags: LDAP_ESCAPE_FILTER));
+    }
+
+    private function queryFirstEntry(string $dn, string $filter, array $options = []): ?Entry
+    {
+        $results = $this->ldap->query($dn, $filter, $options)->execute();
+
+        return count($results) > 0 ? $results[0] : null;
+    }
+
+    private function getEntryByDn(string $dn): ?Entry
+    {
+        return $this->queryFirstEntry($dn, '(objectClass=*)');
+    }
+
+    private function modifyBatch(string $dn, array $modifications, string $errorPrefix): void
+    {
+        $ldapResource = $this->extConnection->getResource();
+
+        if (!@ldap_modify_batch($ldapResource, $dn, $modifications)) {
+            $error = ldap_error($ldapResource);
+            throw new \RuntimeException("$errorPrefix: $error");
+        }
+    }
+
+    private function extractCommonName(string $dn): string
+    {
+        if (preg_match('/CN=([^,]+)/', $dn, $matches)) {
+            return $matches[1];
+        }
+
+        return $dn;
+    }
+
+    private function mapUserSummary(string $dn, Entry $entry): array
+    {
+        return [
+            'dn' => $dn,
+            'cn' => $entry->getAttribute('cn')[0] ?? null,
+            'mail' => $entry->getAttribute('mail')[0] ?? null,
+            'sAMAccountName' => $entry->getAttribute('sAMAccountName')[0] ?? null,
+        ];
     }
 
 }

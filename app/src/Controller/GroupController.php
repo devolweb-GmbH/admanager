@@ -6,6 +6,7 @@ use App\Service\LdapService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
 use OpenApi\Annotations as OA;
 
@@ -29,19 +30,19 @@ class GroupController extends AbstractController
         }
     }
 
-    #[Route('/api/group/{samAccountName}/members', name: 'group_members', methods: ['GET'])]
+    #[Route('/api/group/{groupName}/members', name: 'group_members', methods: ['GET'])]
     /**
      * @OA\Get(
-     *     path="/api/group/{samAccountName}/members",
+     *     path="/api/group/{groupName}/members",
      *     summary="Mitglieder einer Gruppe anzeigen",
-     *     @OA\Parameter(name="samAccountName", in="path", required=true, @OA\Schema(type="string")),
+     *     @OA\Parameter(name="groupName", in="path", required=true, @OA\Schema(type="string")),
      *     @OA\Response(response=200, description="Liste der Gruppenmitglieder")
      * )
      */
-    public function groupMembers(string $samAccountName, LdapService $ldapService): JsonResponse
+    public function groupMembers(string $groupName, LdapService $ldapService): JsonResponse
     {
         try {
-            $members = $ldapService->getGroupMembersByCn($samAccountName);
+            $members = $ldapService->getGroupMembersByCn($groupName);
             return $this->json(['success' => true, 'members' => $members]);
         } catch (\Exception $e) {
             return $this->json(['success' => false, 'error' => $e->getMessage()]);
@@ -65,11 +66,10 @@ class GroupController extends AbstractController
      */
     public function addToGroup(string $samAccountName, Request $request, LdapService $ldapService): JsonResponse
     {
-        $data = json_decode($request->getContent(), true);
-        $groupCn = $data['group'] ?? null;
-
-        if (!$groupCn) {
-            return $this->json(['success' => false, 'error' => 'Gruppenname fehlt']);
+        try {
+            $groupCn = $this->extractGroupName($request);
+        } catch (\InvalidArgumentException $exception) {
+            return $this->json(['success' => false, 'error' => $exception->getMessage()], Response::HTTP_BAD_REQUEST);
         }
 
         try {
@@ -102,11 +102,10 @@ class GroupController extends AbstractController
      */
     public function removeFromGroup(string $samAccountName, Request $request, LdapService $ldapService): JsonResponse
     {
-        $data = json_decode($request->getContent(), true);
-        $groupCn = $data['group'] ?? null;
-
-        if (!$groupCn) {
-            return $this->json(['success' => false, 'error' => 'Gruppenname fehlt']);
+        try {
+            $groupCn = $this->extractGroupName($request);
+        } catch (\InvalidArgumentException $exception) {
+            return $this->json(['success' => false, 'error' => $exception->getMessage()], Response::HTTP_BAD_REQUEST);
         }
 
         try {
@@ -120,5 +119,21 @@ class GroupController extends AbstractController
         } catch (\Exception $e) {
             return $this->json(['success' => false, 'error' => $e->getMessage()]);
         }
+    }
+
+    private function extractGroupName(Request $request): string
+    {
+        try {
+            $data = $request->toArray();
+        } catch (\JsonException) {
+            throw new \InvalidArgumentException('Ungültiger JSON-Request-Body');
+        }
+
+        $groupCn = $data['group'] ?? null;
+        if (!is_string($groupCn) || trim($groupCn) === '') {
+            throw new \InvalidArgumentException('Gruppenname fehlt');
+        }
+
+        return $groupCn;
     }
 }

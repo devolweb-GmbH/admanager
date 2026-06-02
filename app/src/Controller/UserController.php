@@ -6,6 +6,7 @@ use App\Service\LdapService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
 use OpenApi\Annotations as OA;
 
@@ -29,7 +30,7 @@ class UserController extends AbstractController
         $mail = $request->query->get('email');
 
         if (!$sam && !$mail) {
-            return $this->json(['error' => 'Parameter "samAccountName" oder "email" erforderlich'], 400);
+            return $this->json(['error' => 'Parameter "samAccountName" oder "email" erforderlich'], Response::HTTP_BAD_REQUEST);
         }
 
         try {
@@ -191,14 +192,22 @@ class UserController extends AbstractController
      */
     public function resetPassword(string $samAccountName, Request $request, LdapService $ldapService): JsonResponse
     {
-        $data = json_decode($request->getContent(), true);
-        $password = $data['password'] ?? null;
+        try {
+            $data = $request->toArray();
+        } catch (\JsonException) {
+            return $this->json([
+                'success' => false,
+                'error' => 'Ungültiger JSON-Request-Body'
+            ], Response::HTTP_BAD_REQUEST);
+        }
 
-        if (!$password) {
+        $password = isset($data['password']) && is_string($data['password']) ? $data['password'] : null;
+
+        if ($password === null || $password === '') {
             return $this->json([
                 'success' => false,
                 'error' => 'Passwort fehlt im Request-Body'
-            ]);
+            ], Response::HTTP_BAD_REQUEST);
         }
 
         try {

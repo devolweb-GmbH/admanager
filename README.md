@@ -31,8 +31,8 @@ A Symfony-based REST API for managing users and groups via LDAP/Active Directory
 
 ## 🔧 Tech Stack
 
-- PHP 8.2
-- Symfony 6.4
+- PHP 8.2+
+- Symfony 7.2
 - Docker Compose
 - NelmioApiDocBundle v5 (Swagger UI)
 
@@ -43,8 +43,8 @@ A Symfony-based REST API for managing users and groups via LDAP/Active Directory
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USER/ad-management-api.git
-cd ad-management-api
+git clone https://github.com/devolweb-GmbH/admanager.git
+cd admanager
 ```
 
 ### 2. Start Docker environment
@@ -103,11 +103,11 @@ All endpoints are documented in [Swagger UI](http://localhost:8000/api/doc)!
 | POST | `/api/user/{samAccountName}/unlock` | Unlock a user |
 | POST | `/api/user/{samAccountName}/disable` | Disable a user |
 | POST | `/api/user/{samAccountName}/enable` | Enable a user |
-| POST | `/api/user/{samAccountName}/reset-password` | Reset a user's password |
+| POST | `/api/user/{samAccountName}/password` | Reset a user's password |
 | GET | `/api/group/list` | List all groups |
 | GET | `/api/group/{groupName}/members` | List members of a group |
-| POST | `/api/group/{groupName}/add-user/{samAccountName}` | Add a user to a group |
-| POST | `/api/group/{groupName}/remove-user/{samAccountName}` | Remove a user from a group |
+| POST | `/api/user/{samAccountName}/add-to-group` | Add a user to a group |
+| POST | `/api/user/{samAccountName}/remove-from-group` | Remove a user from a group |
 
 ---
 
